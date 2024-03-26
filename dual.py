@@ -137,7 +137,7 @@ class AttModel(nn.Module):
             self.conditioned_decoders.append(nn.Linear(2*sz_embedding,1))
         self.embedding = nn.Embedding(self.num_classes,embed_dim)
         self.drop = torch.nn.Dropout(p=0.5, inplace=False) 
-        self.sample =   self.class_sampler.sample()   
+        #self.sample =   self.class_sampler.sample()   
     def forward(self,x):
         x = self.model(x)
 
