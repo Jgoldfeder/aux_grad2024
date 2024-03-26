@@ -62,7 +62,8 @@ class TransDecoder(nn.Module):
         super(TransDecoder, self).__init__()
 
         self.fc1 = nn.Linear(in_, out_)
-        self.trans = nn.TransformerEncoderLayer(d_model=1, nhead=1,batch_first=True)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=1, nhead=1,batch_first=True)
+        self.trans = nn.TransformerEncoder(encoder_layer, num_layers=6)
     def forward(self,x):
         x = self.fc1(x).unsqueeze(-1)
         #print(x.shape)
