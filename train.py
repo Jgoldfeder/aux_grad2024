@@ -16,8 +16,9 @@ Hacked together by / Copyright 2020 Ross Wightman (https://github.com/rwightman)
 """
 import argparse
 import faulthandler
+import random as rm
 
-faulthandler.enable()
+#faulthandler.enable()
 import importlib
 import json
 import logging
@@ -45,7 +46,27 @@ from timm.scheduler import create_scheduler_v2, scheduler_kwargs
 from timm.utils import   ApexScaler,NativeScaler
 
 
-
+class ClassSampler():
+    def __init__(self,data):
+        divisions = {}
+        c  =0
+        for b_x,b_y in data:
+            #pdb.set_trace()
+            for i in range(b_y.shape[0]):
+                x,y=b_x[i],b_y[i]
+                y=y.item()
+                c+=1
+                print("hello",c,y)
+                if y not in divisions:
+                    divisions[y] = [] 
+                divisions[y].append(x.cpu())
+        self.data = divisions
+        self.classes = sorted([x for x in self.data.keys()])
+    def sample(self):
+        images = []
+        for c in self.classes:
+            images.append(rm.choice(self.data[c]))
+        return images
 
 
 
@@ -456,6 +477,8 @@ group.add_argument('--diffaug', action='store_true', default=False,
                    help='Diffuson augmentation.')
 group.add_argument('--dual', action='store_true', default=False,
                    help='dual mode.')
+group.add_argument('--neighbor', action='store_true', default=False,
+                   help='dual mode.')
 group.add_argument('--metabalance', action='store_true', default=False,
                    help='metabalance mode.')
 group.add_argument('--adatask', action='store_true', default=False,
@@ -563,7 +586,8 @@ def main():
         **args.model_kwargs,
     )
     if args.dual:
-        model = dual.DualModel(model)
+        model = dual.DualModel2(model,args)
+
     if args.head_init_scale is not None:
         with torch.no_grad():
             model.get_classifier().weight.mul_(args.head_init_scale)
@@ -646,6 +670,7 @@ def main():
             **optimizer_kwargs(cfg=args),
             **args.opt_kwargs,
         )
+        
         model.shared_optimizer = create_optimizer_v2(
             model.sharedmodules,
             **optimizer_kwargs(cfg=args),
@@ -876,6 +901,12 @@ def main():
             train_loss_fn = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
     else:
         train_loss_fn = nn.CrossEntropyLoss()
+     
+    if args.neighbor:
+        class_sampler =  ClassSampler(loader_train)
+        model = dual.AttModel(model,class_sampler)
+        model.to(device=device)
+
     train_loss_fn = train_loss_fn.to(device=device)
     validate_loss_fn = nn.CrossEntropyLoss().to(device=device)
     if args.dual:

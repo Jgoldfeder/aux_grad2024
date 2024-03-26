@@ -58,6 +58,110 @@ class DualModel(nn.Module):
         return self.fc(x)
 
 
+class DualModel2(nn.Module):
+    def __init__(self, model,args,bottleneck=64):
+
+        super(DualModel2, self).__init__()
+  
+        self.model = model
+
+        # replace last layer, this varies by model name
+        if "mixer" in args.model:
+            self.fc = model.head
+            model.head = nn.Identity()
+        elif "vit" in args.model:
+            self.fc = model.head
+            model.head = nn.Identity()
+        else:            
+            self.fc = model.fc
+            model.fc = nn.Identity()
+
+
+
+        self.decoder = nn.Sequential(
+            nn.BatchNorm1d(self.fc.in_features),
+            nn.Linear(self.fc.in_features, 4096),
+            nn.LeakyReLU(0.1),
+            nn.BatchNorm1d(4096),
+            nn.Linear(4096, 4096), 
+        )
+
+        self.taskmodules = nn.ModuleList([self.fc,self.decoder])
+        
+        self.old = nn.ModuleList([self.fc,self.model])
+        self.new = nn.ModuleList([self.decoder])
+
+        self.sharedmodules = model
+    
+
+    def forward(self,x,on=False):
+        x = self.model(x)
+        x1 =  self.fc(x)
+        if on:
+            x2 = self.decoder(x)
+            return x1, x2
+        return x1
+    
+class AttModel(nn.Module):
+    def __init__(self,model,class_sampler):
+        super(AttModel, self).__init__()
+        self.model = model
+        self.class_sampler=class_sampler
+        self.fc = model.fc
+        embed_dim = 64
+        model.fc = nn.Linear(2048,embed_dim)#nn.Identity()
+        sz_embedding = embed_dim
+        #self.attention = torch.nn.MultiheadAttention(embed_dim=embed_dim, num_heads=2,
+        #    dropout=0.0, bias=True, add_bias_kv=False, add_zero_attn=False, 
+        #    kdim=embed_dim, vdim=embed_dim, batch_first=True
+        #)
+        self.encoder_layer = nn.TransformerEncoderLayer(d_model=sz_embedding,nhead=4, batch_first=True)
+        self.conditioned_decoders = nn.ModuleList([])
+        self.num_classes=len(class_sampler.sample())
+        for i in range(self.num_classes):
+            self.conditioned_decoders.append(nn.Linear(2*sz_embedding,1))
+        self.embedding = nn.Embedding(self.num_classes,64)
+        self.drop = torch.nn.Dropout(p=0.5, inplace=False) 
+        self.sample =   self.class_sampler.sample()   
+    def forward(self,x):
+        x = self.model(x)
+
+        num_samples = 1
+        ps = []
+        for _ in range(num_samples):
+            #sample = self.sample#
+            sample = self.class_sampler.sample()
+            sample = torch.stack(sample).clone().detach()
+            #pdb.set_trace()
+            #with torch.no_grad():
+            p = self.model(sample.float().cuda())
+
+            ps.append(p)
+        p = torch.mean(torch.stack(ps),dim=0).cuda()
+
+       
+        a = x.unsqueeze(1)
+        b = p.unsqueeze(0).tile(x.shape[0],1,1)
+        
+        combined = torch.cat([a,b],1)
+        
+        x = self.encoder_layer(combined)
+
+
+        query = x[:,0,:]
+        conditionals = x[:,1:,:]
+        query = query.unsqueeze(1).tile(1,conditionals.shape[1],1)
+        #query = self.drop(query)
+        combined = torch.cat([query,conditionals],2)
+        slivers = []
+        for i in range(self.num_classes):
+            sliver = combined[:,i,:]
+            sliver = self.conditioned_decoders[i](sliver).flatten()
+            slivers.append(sliver)
+        x = torch.stack(slivers,dim=1)
+
+
+        return x
 
 class DualLoss(nn.Module):
     """This is label smoothing loss function.
@@ -78,6 +182,12 @@ class DualLoss(nn.Module):
         #print(dense_target.shape,output[1].shape)
         loss1 = self.categorical_loss(output[0],target)*self.weights[0]
         loss2 = self.dense_loss(output[1],dense_target)*self.weights[1]
+        # auto = True
+        # if auto:
+        #     factor = (loss1/loss2).item()
+        #     print(factor)
+        #     loss2 *=factor
+        #print(loss1,loss2)
         if seperate:
             return [loss1,loss2]
         return loss1 + loss2
