@@ -189,7 +189,8 @@ class MetaBalance(Optimizer):
 
             # narrow the magnitude gap between the main gradient and each auxilary gradient
             relax_factor = group['relax_factor']
-            p.grad = (p.norms[0] * p.grad/ (0.001+p.norms[loss_index]) * relax_factor) + p.grad * (1.0 - relax_factor)
+            #p.grad = (p.norms[0] * p.grad/ (0.001+p.norms[loss_index]) * relax_factor) + p.grad * (1.0 - relax_factor)
+            p.grad = (p.norms[0] * p.grad/ p.norms[loss_index] * relax_factor) + p.grad * (1.0 - relax_factor)
 
             if loss_index == 0:
               state['sum_gradient'] = torch.zeros_like(p.data)
