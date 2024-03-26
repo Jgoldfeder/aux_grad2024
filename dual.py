@@ -58,14 +58,14 @@ class DualModel(nn.Module):
         return self.fc(x)
 
 class TransDecoder(nn.Module):
-    def __init__(self, in_,out_,size=5):
+    def __init__(self, in_,out_,size=2):
         super(TransDecoder, self).__init__()
         self.in_ = in_
         self.fc1 = nn.Linear(in_, out_*5)
         encoder_layer = nn.TransformerEncoderLayer(d_model=size, nhead=1,batch_first=True)
         self.trans = nn.TransformerEncoder(encoder_layer, num_layers=6)
     def forward(self,x):
-        x = self.fc1(x).reshape(x.shape[0],4096,5)#.unsqueeze(-1)
+        x = self.fc1(x).reshape(x.shape[0],4096,2)#.unsqueeze(-1)
         #print(x.shape)
         x = self.trans(x)
         #print(x.shape)
@@ -149,7 +149,7 @@ class AttModel(nn.Module):
             sample = torch.stack(sample).clone().detach()
             #pdb.set_trace()
             #with torch.no_grad():
-            p = self.model(sample.float().cuda())
+            p = self.model(sample.float().cuda()).detach()
 
             ps.append(p)
         p = torch.mean(torch.stack(ps),dim=0).cuda()
