@@ -149,7 +149,7 @@ class AttModel(nn.Module):
             sample = torch.stack(sample).clone().detach()
             #pdb.set_trace()
             #with torch.no_grad():
-            p = self.model(sample.float().cuda()).detach()
+            p = self.model(sample.float().cuda())#.detach()
 
             ps.append(p)
         p = torch.mean(torch.stack(ps),dim=0).cuda()
