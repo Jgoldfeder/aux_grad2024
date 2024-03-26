@@ -58,14 +58,14 @@ class DualModel(nn.Module):
         return self.fc(x)
 
 class TransDecoder(nn.Module):
-    def __init__(self, in_,out_,):
+    def __init__(self, in_,out_,size=5):
         super(TransDecoder, self).__init__()
-
-        self.fc1 = nn.Linear(in_, out_)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=1, nhead=1,batch_first=True)
+        self.in_ = in_
+        self.fc1 = nn.Linear(in_, out_*5)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=size, nhead=1,batch_first=True)
         self.trans = nn.TransformerEncoder(encoder_layer, num_layers=6)
     def forward(self,x):
-        x = self.fc1(x).unsqueeze(-1)
+        x = self.fc1(x).reshape(x.shape[0],4096,5)#.unsqueeze(-1)
         #print(x.shape)
         x = self.trans(x)
         #print(x.shape)
