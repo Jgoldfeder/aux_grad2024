@@ -586,7 +586,10 @@ def main():
         **args.model_kwargs,
     )
     if args.dual:
-        model = dual.DualModel2(model,args)
+        #model = dual.DualModel2(model,args)
+        model = dual.DualModel(model)
+    if args.neighbor:
+        model = dual.AttModel(model,None)
 
     if args.head_init_scale is not None:
         with torch.no_grad():
@@ -665,12 +668,14 @@ def main():
         **args.opt_kwargs,
     )
     if args.metabalance:
+        temp = args.lr
+        args.lr = 0.01
         optimizer = create_optimizer_v2(
             model.taskmodules,
             **optimizer_kwargs(cfg=args),
             **args.opt_kwargs,
         )
-        
+        args.lr = temp
         model.shared_optimizer = create_optimizer_v2(
             model.sharedmodules,
             **optimizer_kwargs(cfg=args),
@@ -904,8 +909,7 @@ def main():
      
     if args.neighbor:
         class_sampler =  ClassSampler(loader_train)
-        model = dual.AttModel(model,class_sampler)
-        model.to(device=device)
+        model.class_sampler = class_sampler 
 
     train_loss_fn = train_loss_fn.to(device=device)
     validate_loss_fn = nn.CrossEntropyLoss().to(device=device)
