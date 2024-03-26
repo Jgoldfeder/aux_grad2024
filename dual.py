@@ -57,6 +57,18 @@ class DualModel(nn.Module):
             return x1, x2
         return self.fc(x)
 
+class TransDecoder(nn.Module):
+    def __init__(self, in_,out_,):
+        super(TransDecoder, self).__init__()
+
+        self.fc1 = nn.Linear(in_, out_)
+        self.trans = nn.TransformerEncoderLayer(d_model=1, nhead=1,batch_first=True)
+    def forward(self,x):
+        x = self.fc1(x).unsqueeze(-1)
+        print(x.shape)
+        x = self.trans(x)
+        print(x.shape)
+        return x
 
 class DualModel2(nn.Module):
     def __init__(self, model,args,bottleneck=64):
@@ -86,6 +98,8 @@ class DualModel2(nn.Module):
             nn.Linear(4096, 4096), 
         )
 
+        self.decoder = TransDecoder(self.fc.in_features,4096)
+
         self.taskmodules = nn.ModuleList([self.fc,self.decoder])
         
         self.old = nn.ModuleList([self.fc,self.model])
@@ -108,7 +122,7 @@ class AttModel(nn.Module):
         self.model = model
         self.class_sampler=class_sampler
         self.fc = model.fc
-        embed_dim = 64
+        embed_dim = 100
         model.fc = nn.Linear(2048,embed_dim)#nn.Identity()
         sz_embedding = embed_dim
         #self.attention = torch.nn.MultiheadAttention(embed_dim=embed_dim, num_heads=2,
@@ -120,7 +134,7 @@ class AttModel(nn.Module):
         self.num_classes=len(class_sampler.sample())
         for i in range(self.num_classes):
             self.conditioned_decoders.append(nn.Linear(2*sz_embedding,1))
-        self.embedding = nn.Embedding(self.num_classes,64)
+        self.embedding = nn.Embedding(self.num_classes,embed_dim)
         self.drop = torch.nn.Dropout(p=0.5, inplace=False) 
         self.sample =   self.class_sampler.sample()   
     def forward(self,x):
