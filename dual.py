@@ -65,10 +65,10 @@ class TransDecoder(nn.Module):
         self.trans = nn.TransformerEncoderLayer(d_model=1, nhead=1,batch_first=True)
     def forward(self,x):
         x = self.fc1(x).unsqueeze(-1)
-        print(x.shape)
+        #print(x.shape)
         x = self.trans(x)
-        print(x.shape)
-        return x
+        #print(x.shape)
+        return x.squeeze(-1)
 
 class DualModel2(nn.Module):
     def __init__(self, model,args,bottleneck=64):
