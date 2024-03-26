@@ -132,7 +132,7 @@ class AttModel(nn.Module):
         #)
         self.encoder_layer = nn.TransformerEncoderLayer(d_model=sz_embedding,nhead=4, batch_first=True)
         self.conditioned_decoders = nn.ModuleList([])
-        self.num_classes=len(class_sampler.sample())
+        self.num_classes=100#len(class_sampler.sample())
         for i in range(self.num_classes):
             self.conditioned_decoders.append(nn.Linear(2*sz_embedding,1))
         self.embedding = nn.Embedding(self.num_classes,embed_dim)
