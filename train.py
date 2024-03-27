@@ -79,7 +79,7 @@ import diffusion_augment
 import dual
 import metabalance
 import adatask
-#from dataset_factory import create_dataset
+from dataset_factory import create_dataset
 
 try:
     from apex import amp
@@ -486,6 +486,8 @@ group.add_argument('--adatask', action='store_true', default=False,
 
 group.add_argument('--anamoly', action='store_true', default=False,
                    help='anamoly detection mode.')
+parser.add_argument('--weights', type=float, nargs='+', default=[1,1],
+                    help='task weights for dual mode.')
 
 def _parse_args():
     # Do we have a config file to parse?
@@ -508,6 +510,7 @@ def main():
     utils.setup_default_logging()
     args, args_text = _parse_args()
 
+    print("COMPILNG>>>>>>>>>>>>>>>>>>>",args.torchcompile)
     if args.anamoly:
         torch.autograd.set_detect_anomaly(True)
     
@@ -521,7 +524,9 @@ def main():
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.benchmark = True
-
+    class Object:
+        pass
+    data_holder=Object()
     args.prefetcher = not args.no_prefetcher
     args.grad_accum_steps = max(1, args.grad_accum_steps)
     device = utils.init_distributed_device(args)
@@ -587,7 +592,9 @@ def main():
     )
     if args.dual:
         #model = dual.DualModel2(model,args)
+        #model = dual.DualModel3(model,args)
         model = dual.DualModel(model)
+
     if args.neighbor:
         model = dual.AttModel(model,None)
 
@@ -669,7 +676,7 @@ def main():
     )
     if args.metabalance:
         temp = args.lr
-        args.lr = 0.01
+        #args.lr = 0.01
         optimizer = create_optimizer_v2(
             model.taskmodules,
             **optimizer_kwargs(cfg=args),
@@ -680,8 +687,10 @@ def main():
             model.sharedmodules,
             **optimizer_kwargs(cfg=args),
             **args.opt_kwargs,
-        )   
+        )  
+        data_holder.shared_optimizer = model.shared_optimizer 
         model.metabalance = metabalance.MetaBalance(model.sharedmodules.parameters())
+        data_holder.metabalance = model.metabalance
     if args.adatask:
         print("adatask mode, optim must be ADAM")
         optimizer = adatask.Adam_with_AdaTask([dict(params=model.parameters(), lr=args.lr)], n_tasks=2, args=args, device='cuda')
@@ -742,12 +751,14 @@ def main():
             # Apex DDP preferred unless native amp is activated
             if utils.is_primary(args):
                 _logger.info("Using NVIDIA APEX DistributedDataParallel.")
-            model = ApexDDP(model, delay_allreduce=True)
+            model = ApexDDP(model, delay_allreduce=True,find_unused_parameters=True)
         else:
             if utils.is_primary(args):
                 _logger.info("Using native Torch DistributedDataParallel.")
-            model = NativeDDP(model, device_ids=[device], broadcast_buffers=not args.no_ddp_bb)
+            model = NativeDDP(model, device_ids=[device], broadcast_buffers=not args.no_ddp_bb,find_unused_parameters=True)
         # NOTE: EMA model does not need to be wrapped by DDP
+
+
 
     if args.torchcompile:
         # torch compile should be done after DDP
@@ -914,7 +925,7 @@ def main():
     train_loss_fn = train_loss_fn.to(device=device)
     validate_loss_fn = nn.CrossEntropyLoss().to(device=device)
     if args.dual:
-        train_loss_fn = dual.DualLoss(train_loss_fn,[0.5,0.5])
+        train_loss_fn = dual.DualLoss(train_loss_fn,args.weights)
     # setup checkpoint saver and eval metric tracking
     eval_metric = args.eval_metric if loader_eval is not None else 'loss'
     decreasing_metric = eval_metric == 'loss'
@@ -961,6 +972,18 @@ def main():
         **scheduler_kwargs(args, decreasing_metric=decreasing_metric),
         updates_per_epoch=updates_per_epoch,
     )
+    if args.metabalance:
+        model.lr_scheduler , num_epochs = create_scheduler_v2(
+        data_holder.shared_optimizer,
+        **scheduler_kwargs(args, decreasing_metric=decreasing_metric),
+        updates_per_epoch=updates_per_epoch,
+        )
+        data_holder.lr_scheduler = model.lr_scheduler
+
+        model.shared_optimizer = data_holder.shared_optimizer
+        model.lr_scheduler = data_holder.lr_scheduler
+        model.metabalance = data_holder.metabalance
+        
     start_epoch = 0
     if args.start_epoch is not None:
         # a specified start_epoch will always override the resume epoch
@@ -970,8 +993,13 @@ def main():
     if lr_scheduler is not None and start_epoch > 0:
         if args.sched_on_updates:
             lr_scheduler.step_update(start_epoch * updates_per_epoch)
+            if args.metabalance:
+                model.lr_scheduler.step_update(start_epoch * updates_per_epoch)
+                
         else:
             lr_scheduler.step(start_epoch)
+            if args.metabalance:
+                model.lr_scheduler.step(start_epoch)
 
     if utils.is_primary(args):
         _logger.info(
@@ -1058,7 +1086,9 @@ def main():
             if lr_scheduler is not None:
                 # step LR for next epoch
                 lr_scheduler.step(epoch + 1, latest_metric)
-
+                if args.metabalance:
+                    model.lr_scheduler.step(epoch + 1, latest_metric)
+                    
             results.append({
                 'epoch': epoch,
                 'train': train_metrics,
@@ -1262,7 +1292,9 @@ def train_one_epoch(
 
         if lr_scheduler is not None:
             lr_scheduler.step_update(num_updates=num_updates, metric=losses_m.avg)
-
+            if args.metabalance:
+                model.lr_scheduler.step_update(num_updates=num_updates, metric=losses_m.avg)
+                
         update_sample_count = 0
         data_start_time = time.time()
         # end for

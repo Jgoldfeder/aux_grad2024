@@ -61,11 +61,12 @@ class TransDecoder(nn.Module):
     def __init__(self, in_,out_,size=2):
         super(TransDecoder, self).__init__()
         self.in_ = in_
-        self.fc1 = nn.Linear(in_, out_*5)
+        self.fc1 = nn.Linear(in_, out_*size)
+        self.size = size
         encoder_layer = nn.TransformerEncoderLayer(d_model=size, nhead=1,batch_first=True)
         self.trans = nn.TransformerEncoder(encoder_layer, num_layers=6)
     def forward(self,x):
-        x = self.fc1(x).reshape(x.shape[0],4096,2)#.unsqueeze(-1)
+        x = self.fc1(x).reshape(x.shape[0],4096,self.size)#.unsqueeze(-1)
         #print(x.shape)
         x = self.trans(x)
         #print(x.shape)
@@ -116,7 +117,7 @@ class DualModel2(nn.Module):
             x2 = self.decoder(x)
             return x1, x2
         return x1
-    
+
 class AttModel(nn.Module):
     def __init__(self,model,class_sampler):
         super(AttModel, self).__init__()
@@ -207,3 +208,61 @@ class DualLoss(nn.Module):
             return [loss1,loss2]
         return loss1 + loss2
 
+class IndividualDecoder(nn.Module):
+    def __init__(self, in_,out_):
+        super(IndividualDecoder, self).__init__()
+        fcs = []
+        for i in range(out_):
+            fcs.append(nn.Sequential(
+                nn.Linear(in_, 4),
+                nn.LeakyReLU(0.1),
+                nn.Linear(4, 1),             
+            )
+            )
+        self.fcs = nn.ModuleList(fcs)
+    def forward(self,x):
+        outs = []
+        for fc in self.fcs:
+            outs.append(fc(x))
+            #print(outs[-1].shape)
+        outs = torch.cat(outs,dim=1)
+        return outs
+        
+class DualModel3(nn.Module):
+    def __init__(self, model,args,bottleneck=64):
+
+        super(DualModel3, self).__init__()
+  
+        self.model = model
+
+        # replace last layer, this varies by model name
+        if "mixer" in args.model:
+            self.fc = model.head
+            model.head = nn.Identity()
+        elif "vit" in args.model:
+            self.fc = model.head
+            model.head = nn.Identity()
+        else:            
+            self.fc = model.fc
+            model.fc = nn.Identity()
+
+
+
+
+        self.decoder = IndividualDecoder(self.fc.in_features,4096)
+
+        self.taskmodules = nn.ModuleList([self.fc,self.decoder])
+        
+        self.old = nn.ModuleList([self.fc,self.model])
+        self.new = nn.ModuleList([self.decoder])
+
+        self.sharedmodules = model
+    
+
+    def forward(self,x,on=False):
+        x = self.model(x)
+        x1 =  self.fc(x)
+        if on:
+            x2 = self.decoder(x)
+            return x1, x2
+        return x1

@@ -1,13 +1,13 @@
 """ Dataset Factory
 
-Hacked together by / Copyright 2021, Ross Wightman
+Original Script by Ross Wightman
 
-Edited 2024 by Judah Goldfeder
+Greatly expanded by Judah Goldfeder
 """
 import os
 from typing import Optional
-
-from torchvision.datasets import CIFAR100, CIFAR10, MNIST, KMNIST, FashionMNIST, ImageFolder
+import torch
+from torchvision.datasets import CIFAR100, CIFAR10, MNIST, KMNIST, FashionMNIST, ImageFolder,FGVCAircraft,Caltech101,Food101
 try:
     from torchvision.datasets import Places365
     has_places365 = True
@@ -28,8 +28,9 @@ try:
     has_imagenet = True
 except ImportError:
     has_imagenet = False
-
-from .dataset import IterableImageDataset, ImageDataset
+import torchvision
+import torchvision.transforms as transforms
+from timm.data.dataset import IterableImageDataset, ImageDataset
 
 _TORCH_BASIC_DS = dict(
     cifar10=CIFAR10,
@@ -147,6 +148,31 @@ def create_dataset(
             if split in _EVAL_SYNONYM:
                 split = 'val'
             ds = ImageNet(split=split, **torch_kwargs)
+        elif name == 'aircraft':
+            if split in _TRAIN_SYNONYM:
+                split = 'trainval'
+            elif split in _EVAL_SYNONYM:
+                split = 'test'
+            ds = FGVCAircraft(split=split, **torch_kwargs)
+        elif name == 'food101':
+            if split in _TRAIN_SYNONYM:
+                split = 'train'
+            elif split in _EVAL_SYNONYM:
+                split = 'test'
+            ds = Food101(split=split, **torch_kwargs)
+        elif name == 'caltech101':
+            # torchvision.transforms.Resize((224,224)),
+            transform = transforms.Compose([torchvision.transforms.functional.pil_to_tensor,transforms.Resize(size=(224, 224), antialias=True)])
+            generator = torch.Generator().manual_seed(42)
+            full_dataset = Caltech101(**torch_kwargs,transform=transform)
+            train_size = int(0.8 * len(full_dataset))
+            test_size = len(full_dataset) - train_size
+            train_dataset, test_dataset = torch.utils.data.random_split(full_dataset, [train_size, test_size],generator=generator)
+            if split in _TRAIN_SYNONYM:
+                ds = train_dataset
+            elif split in _EVAL_SYNONYM:
+                ds = test_dataset
+        
         elif name == 'image_folder' or name == 'folder':
             # in case torchvision ImageFolder is preferred over timm ImageDataset for some reason
             if search_split and os.path.isdir(root):
@@ -182,6 +208,10 @@ def create_dataset(
             **kwargs
         )
     elif name.startswith('tfds/'):
+        short_name = name.split('/', 2)[-1]
+        if short_name == "caltech101":
+            if split=="validation":
+                split="test"
         ds = IterableImageDataset(
             root,
             reader=name,
