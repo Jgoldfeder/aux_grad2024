@@ -95,12 +95,12 @@ class DualModel2(nn.Module):
         self.decoder = nn.Sequential(
             nn.BatchNorm1d(self.fc.in_features),
             nn.Linear(self.fc.in_features, 4096),
-            nn.LeakyReLU(0.1),
-            nn.BatchNorm1d(4096),
-            nn.Linear(4096, 4096), 
+            #nn.LeakyReLU(0.1),
+            #nn.BatchNorm1d(4096),
+            #nn.Linear(4096, 4096), 
         )
 
-        self.decoder = TransDecoder(self.fc.in_features,4096)
+        #self.decoder = TransDecoder(self.fc.in_features,4096)
 
         self.taskmodules = nn.ModuleList([self.fc,self.decoder])
         
@@ -186,7 +186,7 @@ class DualLoss(nn.Module):
         super(DualLoss, self).__init__()
         self.dense_loss =  nn.BCEWithLogitsLoss()
         self.categorical_loss = loss
-        self.dense_labels = torch.tensor(np.random.choice([0, 1], size=(196,64*64)).astype("float32"))
+        self.dense_labels = torch.tensor(np.random.choice([0, 1], size=(257,64*64)).astype("float32"))
 
         self.weights = weights
 
@@ -201,7 +201,6 @@ class DualLoss(nn.Module):
         # auto = True
         # if auto:
         #     factor = (loss1/loss2).item()
-        #     print(factor)
         #     loss2 *=factor
         #print(loss1,loss2)
         if seperate:
@@ -266,3 +265,83 @@ class DualModel3(nn.Module):
             x2 = self.decoder(x)
             return x1, x2
         return x1
+
+
+
+
+
+class DualLossLearn(nn.Module):
+    """This is label smoothing loss function.
+    """
+    def __init__(self,loss,weights,num_classes=211, accumulate = True):
+        super(DualLossLearn, self).__init__()
+        self.dense_loss = nn.BCEWithLogitsLoss()#nn.MSELoss()# #nn.BCELoss()
+        self.categorical_loss = loss
+        self.dense_labels = torch.tensor(np.random.choice([0, 1], size=(num_classes,4096)).astype("float32"))
+        self.num_classes = num_classes
+        self.weights = weights
+        self.accumulate = accumulate
+        self.clear_sum()
+
+    def clear_sum(self):
+        self.dense_output_sum = torch.tensor(np.zeros((self.num_classes,4096)).astype("float64"))
+        self.total_accumulated = np.zeros(self.num_classes)
+
+    def get_avg(self):
+        for t in range(self.num_classes):
+            if self.total_accumulated[t] != 0:
+                self.dense_output_sum[t] /= self.total_accumulated[t]
+        return_val = self.dense_output_sum
+        self.clear_sum()
+        return return_val
+    
+    def update_labels(self):
+        mode = "pass"
+        if mode=="negate avg":
+            avg = self.get_avg()
+            self.dense_labels=avg
+        if mode=="negate avg":
+            avg = self.get_avg()
+            self.dense_labels=torch.ones(avg.shapes) - avg
+        if mode=="pass":
+            self.get_avg()
+        else:     
+            avg = self.get_avg()
+            #print(avg)
+            
+            
+            current = self.dense_labels
+            num_flips = 40
+    
+            for j in range(self.num_classes):
+                for _ in range(num_flips):
+                    j_avg = avg[j,:]
+                    j_current = current[j,:]
+                    error =(j_current-j_avg).abs()
+                    lowest_error = torch.argmin(error)
+                    highest_error = torch.argmax(error)
+                    #j_current[lowest_error] = 1 - j_current[lowest_error]
+                    j_current[highest_error] = 1 - j_current[highest_error]
+            #self.dense_labels = torch.tensor(np.random.choice([0, 1], size=(self.num_classes,64*64)).astype("float32"))
+
+    def forward(self,output,target,seperate=False):
+        if self.accumulate:
+            for i,t in enumerate(target):
+                self.dense_output_sum[t] +=  nn.Sigmoid()(output[1][i].detach()).cpu()
+                self.total_accumulated[t] += 1 
+        dense_target = []
+        for t in target:
+            dense_target.append(self.dense_labels[t])
+        dense_target = torch.stack(dense_target).cuda()
+        loss1 = self.categorical_loss(output[0],target)*self.weights[0]
+        loss2 = self.dense_loss(output[1],dense_target)*self.weights[1]
+        if seperate:
+            return [loss1,loss2]
+        return loss1 + loss2
+
+
+
+
+
+
+        

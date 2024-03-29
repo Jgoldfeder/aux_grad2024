@@ -44,7 +44,31 @@ from timm.optim import create_optimizer_v2, optimizer_kwargs
 from timm.scheduler import create_scheduler_v2, scheduler_kwargs
 
 from timm.utils import   ApexScaler,NativeScaler
+import torchvision.transforms as transforms
 
+
+
+
+data_transforms = {
+    'train': transforms.Compose([
+        transforms.Resize((230,230)),
+        transforms.RandomRotation(15,),
+        transforms.RandomCrop(224),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.507, 0.487, 0.441], std=[0.267, 0.256, 0.276])
+    ]),
+    'eval': transforms.Compose([
+        transforms.Resize((224,224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.507, 0.487, 0.441], std=[0.267, 0.256, 0.276])
+    ]),
+    'test': transforms.Compose([
+        transforms.Resize((224,224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.507, 0.487, 0.441], std=[0.267, 0.256, 0.276])
+    ]),
+}
 
 class ClassSampler():
     def __init__(self,data):
@@ -79,7 +103,7 @@ import diffusion_augment
 import dual
 import metabalance
 import adatask
-from dataset_factory import create_dataset
+from dataset_factory import create_dataset, SubSampler
 
 try:
     from apex import amp
@@ -115,42 +139,6 @@ has_compile = hasattr(torch, 'compile')
 _logger = logging.getLogger('train')
 
 
-
-# class NativeScaler:
-#     state_dict_key = "amp_scaler"
-
-#     def __init__(self):
-#         self._scaler = torch.cuda.amp.GradScaler()
-
-#     def __call__(
-#             self,
-#             loss,
-#             optimizers,
-#             clip_grad=None,
-#             clip_mode='norm',
-#             parameters_=None,
-#             create_graph=False,
-#             need_update=True,
-#     ):
-#         self._scaler.scale(loss).backward(create_graph=create_graph)
-#         if not isinstance(optimizers, list):
-#             optimizers=[optimizers]
-#         for i in range(len(optimizers)):
-#             optimizer = optimizers[i]
-#             parameters = parameters_[i]
-#             if need_update:
-#                 if clip_grad is not None:
-#                     assert parameters is not None
-#                     self._scaler.unscale_(optimizer)  # unscale the gradients of optimizer's assigned params in-place
-#                     dispatch_clip_grad(parameters, clip_grad, mode=clip_mode)
-#                 self._scaler.step(optimizer)
-#         self._scaler.update()
-
-    # def state_dict(self):
-    #     return self._scaler.state_dict()
-
-    # def load_state_dict(self, state_dict):
-    #     self._scaler.load_state_dict(state_dict)
 
 
 # The first arg parser parses out only the --config argument, this argument is used to
@@ -488,6 +476,9 @@ group.add_argument('--anamoly', action='store_true', default=False,
                    help='anamoly detection mode.')
 parser.add_argument('--weights', type=float, nargs='+', default=[1,1],
                     help='task weights for dual mode.')
+group.add_argument('--simpleloader', action='store_true', default=False,
+                   help='use  simple loader.')
+group.add_argument("--level", type=int, default=100, help="Data level.")
 
 def _parse_args():
     # Do we have a config file to parse?
@@ -591,9 +582,9 @@ def main():
         **args.model_kwargs,
     )
     if args.dual:
-        #model = dual.DualModel2(model,args)
+        model = dual.DualModel2(model,args)
         #model = dual.DualModel3(model,args)
-        model = dual.DualModel(model)
+        #model = dual.DualModel(model)
 
     if args.neighbor:
         model = dual.AttModel(model,None)
@@ -804,7 +795,8 @@ def main():
             target_key=args.target_key,
             num_samples=args.val_num_samples,
         )
-
+    if args.level != 100:
+        dataset_train = SubSampler(dataset_train,args.level)
     # setup mixup / cutmix
     collate_fn = None
     mixup_fn = None
@@ -869,6 +861,9 @@ def main():
         worker_seeding=args.worker_seeding,
     )
 
+    #if args.level != 100:
+    #     loader_train = torch.utils.data.DataLoader(dataset_train, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)#,transform =loader_train.transform )
+
     loader_eval = None
     if args.val_split:
         eval_workers = args.workers
@@ -890,6 +885,14 @@ def main():
             device=device,
             use_prefetcher=args.prefetcher,
         )
+        # if args.simpleloader:
+        #     loader_eval = torch.utils.data.DataLoader(dataset_eval, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
+    
+    
+    if args.simpleloader:
+        print("simple loader")
+        dataset_train.transform = data_transforms['train']
+        dataset_eval.transform = data_transforms['test']
 
     # setup loss function
     if args.jsd_loss:
@@ -925,7 +928,7 @@ def main():
     train_loss_fn = train_loss_fn.to(device=device)
     validate_loss_fn = nn.CrossEntropyLoss().to(device=device)
     if args.dual:
-        train_loss_fn = dual.DualLoss(train_loss_fn,args.weights)
+        train_loss_fn = dual.DualLossLearn(train_loss_fn,args.weights)
     # setup checkpoint saver and eval metric tracking
     eval_metric = args.eval_metric if loader_eval is not None else 'loss'
     decreasing_metric = eval_metric == 'loss'
@@ -1162,12 +1165,14 @@ def train_one_epoch(
 
         # multiply by accum steps to get equivalent for full update
         data_time_m.update(accum_steps * (time.time() - data_start_time))
-
+        
         def _forward():
             with amp_autocast():
+
                 if args.dual:
                     output = model(input,True)
                 else:
+                
                     output = model(input)
 
                 if args.metabalance or args.adatask:
@@ -1301,7 +1306,8 @@ def train_one_epoch(
 
     if hasattr(optimizer, 'sync_lookahead'):
         optimizer.sync_lookahead()
-
+    if args.dual:
+        loss_fn.update_labels()
     return OrderedDict([('loss', losses_m.avg)])
 
 
@@ -1333,6 +1339,7 @@ def validate(
                 input = input.contiguous(memory_format=torch.channels_last)
 
             with amp_autocast():
+
                 output = model(input)
                 if isinstance(output, (tuple, list)):
                     output = output[0]
