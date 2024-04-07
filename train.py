@@ -17,7 +17,7 @@ Hacked together by / Copyright 2020 Ross Wightman (https://github.com/rwightman)
 import argparse
 import faulthandler
 import random as rm
-
+import attack, attack_dense,attack_low_dim
 #faulthandler.enable()
 import importlib
 import json
@@ -47,6 +47,23 @@ from timm.utils import   ApexScaler,NativeScaler
 import torchvision.transforms as transforms
 
 
+
+def count_correct_nn(outputs, targets, mels):
+    mse = nn.MSELoss(reduction="none")
+    batch_size = outputs.size(0)
+    num_classes = mels.size(0)
+    outputs_repeated = outputs.unsqueeze(1).repeat_interleave(num_classes, dim=1)
+    mels_repeated = mels.unsqueeze(0).repeat_interleave(batch_size, dim=0)
+    if len(outputs.shape) == 2:
+        mse_dists = mse(outputs_repeated.cpu(), mels_repeated.cpu()).mean(-1)
+        outputs_NN = mels[mse_dists.argmin(-1)]
+        return ((outputs_NN - targets).abs().sum(-1) < 1e-5).sum().item()
+
+    else:
+        mse_dists = mse(outputs_repeated.cpu(), mels_repeated.cpu()).mean(-1).mean(-1)
+        outputs_NN = mels[mse_dists.argmin(-1)]
+
+        return ((outputs_NN - targets).abs().sum(-1).sum(-1) < 1e-5).sum().item()
 
 
 data_transforms = {
@@ -861,6 +878,7 @@ def main():
         worker_seeding=args.worker_seeding,
     )
 
+
     #if args.level != 100:
     #     loader_train = torch.utils.data.DataLoader(dataset_train, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)#,transform =loader_train.transform )
 
@@ -887,7 +905,21 @@ def main():
         )
         # if args.simpleloader:
         #     loader_eval = torch.utils.data.DataLoader(dataset_eval, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
-    
+    loader_attack = create_loader(
+            dataset_eval,
+            input_size=data_config['input_size'],
+            batch_size=1,
+            is_training=False,
+            interpolation=data_config['interpolation'],
+            mean=data_config['mean'],
+            std=data_config['std'],
+            num_workers=eval_workers,
+            distributed=args.distributed,
+            crop_pct=data_config['crop_pct'],
+            pin_memory=args.pin_mem,
+            device=device,
+            use_prefetcher=args.prefetcher,
+        )   
     
     if args.simpleloader:
         print("simple loader")
@@ -1037,7 +1069,8 @@ def main():
                 if utils.is_primary(args):
                     _logger.info("Distributing BatchNorm running means and vars")
                 utils.distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
-
+            if args.dual:
+                validate_loss_fn.dense_labels = train_loss_fn.dense_labels
             if loader_eval is not None:
                 eval_metrics = validate(
                     model,
@@ -1098,6 +1131,19 @@ def main():
                 'validation': eval_metrics,
             })
 
+            if epoch==3:
+                
+                # attack
+                epsilons = [0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3]
+                dense_emb = nn.Embedding.from_pretrained(train_loss_fn.dense_labels).cuda()
+
+                for epsilon in epsilons:
+                    print("base")
+                    attack.test_fgsm_untargeted(model, device, loader_attack, epsilon, mels=None)
+                    print("dense")
+                    attack_dense.test_fgsm_untargeted(dual.DenseWrapper(model), device, loader_attack, epsilon, mels=train_loss_fn.dense_labels[:100,:],emb=dense_emb)
+                    attack_low_dim.test_fgsm_untargeted(dual.DenseWrapper(model), device, loader_attack, epsilon, mels=train_loss_fn.dense_labels[:100,:],emb=dense_emb)
+                sys.exit()
     except KeyboardInterrupt:
         pass
 
@@ -1168,7 +1214,6 @@ def train_one_epoch(
         
         def _forward():
             with amp_autocast():
-
                 if args.dual:
                     output = model(input,True)
                 else:
@@ -1239,8 +1284,32 @@ def train_one_epoch(
                 loss = _forward()
                 _backward(loss)
         else:
-            loss = _forward()
-            _backward(loss)
+            label_learn=False
+            if label_learn:
+                og_state = dual.State(model,[optimizer,model.shared_optimizer],loss_fn)
+                new_state = og_state.copy().mutate(0.10)
+                
+                loss = _forward()
+                _backward(loss)
+                model.zero_grad()
+                loss1 = sum(_forward())
+                model.zero_grad()
+                state1 = dual.State(model,[optimizer,model.shared_optimizer],loss_fn)
+                state1.restore()
+                # new_state.restore()
+
+                # loss = _forward()
+                # _backward(loss)
+                # model.zero_grad()                
+                # loss2 = sum(_forward())
+                # model.zero_grad()
+
+                # if loss1 < loss2:
+                #     state1.restore()
+                #     loss = loss1
+            else:
+                loss = _forward()
+                _backward(loss)
         if args.metabalance or args.adatask:
             loss = sum(loss)
         if not args.distributed:
@@ -1318,15 +1387,20 @@ def validate(
         args,
         device=torch.device('cuda'),
         amp_autocast=suppress,
-        log_suffix=''
+        log_suffix='',
 ):
+    log_dense = args.dual
+    #log_dense=False
     batch_time_m = utils.AverageMeter()
     losses_m = utils.AverageMeter()
     top1_m = utils.AverageMeter()
     top5_m = utils.AverageMeter()
+    dense_top1_m = utils.AverageMeter()
 
     model.eval()
 
+    if log_dense:
+        dense_emb = nn.Embedding.from_pretrained(loss_fn.dense_labels).cuda()
     end = time.time()
     last_idx = len(loader) - 1
     with torch.no_grad():
@@ -1339,8 +1413,13 @@ def validate(
                 input = input.contiguous(memory_format=torch.channels_last)
 
             with amp_autocast():
-
-                output = model(input)
+                if log_dense:
+                    output = model(input,True)
+                    dense_output = output[1]
+                    output = output[0]
+                    dense_target = dense_emb(target).cpu()
+                else:
+                    output = model(input)
                 if isinstance(output, (tuple, list)):
                     output = output[0]
 
@@ -1352,11 +1431,15 @@ def validate(
 
                 loss = loss_fn(output, target)
             acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
-
+            if log_dense:
+                dense_acc1 = count_correct_nn(dense_output, dense_target, loss_fn.dense_labels)/input.shape[0]
             if args.distributed:
                 reduced_loss = utils.reduce_tensor(loss.data, args.world_size)
                 acc1 = utils.reduce_tensor(acc1, args.world_size)
                 acc5 = utils.reduce_tensor(acc5, args.world_size)
+                if log_dense:
+                    dense_acc1 = utils.reduce_tensor(dense_acc1, args.world_size)
+
             else:
                 reduced_loss = loss.data
 
@@ -1366,6 +1449,8 @@ def validate(
             losses_m.update(reduced_loss.item(), input.size(0))
             top1_m.update(acc1.item(), output.size(0))
             top5_m.update(acc5.item(), output.size(0))
+            if log_dense:
+                dense_top1_m.update(dense_acc1, output.size(0))
 
             batch_time_m.update(time.time() - end)
             end = time.time()
@@ -1378,8 +1463,10 @@ def validate(
                     f'Acc@1: {top1_m.val:>7.3f} ({top1_m.avg:>7.3f})  '
                     f'Acc@5: {top5_m.val:>7.3f} ({top5_m.avg:>7.3f})'
                 )
-
-    metrics = OrderedDict([('loss', losses_m.avg), ('top1', top1_m.avg), ('top5', top5_m.avg)])
+    if log_dense:
+        metrics = OrderedDict([('loss', losses_m.avg), ('top1', top1_m.avg),  ('dense_top1', dense_top1_m.avg), ('top5', top5_m.avg)])
+    else:
+        metrics = OrderedDict([('loss', losses_m.avg), ('top1', top1_m.avg),  ('top5', top5_m.avg)])
 
     return metrics
 

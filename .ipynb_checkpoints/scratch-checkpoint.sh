@@ -162,7 +162,7 @@ CUDA_VISIBLE_DEVICES=3 python train.py --data-dir /data/torch/pets  --dataset to
 
 
 
-CUDA_VISIBLE_DEVICES=4  python train.py --data-dir /data/torch/cifar100 --dataset torch/cifar100 -b=128 --img-size=224 --epochs=90 --color-jitter=0 --amp --lr=0.001 --sched=step --model-ema --model-ema-decay=0.995 --reprob=0.5 --smoothing=0.1 --train-interpolation=bilinear --aa=v0 --model=resnet50 --num-classes=100 --opt=adam --weight-decay=1e-4 --log-wandb --dataset-download --experiment cifar100 --name "Pretrain adam 90 epochs metabalance_ fcdecoder full logging_attack___BCEBIN 4x" --decay-rate 0.1 --decay-epochs 30 --metabalance --pretrained
+CUDA_VISIBLE_DEVICES=4  python train.py --data-dir /data/torch/cifar100 --dataset torch/cifar100 -b=128 --img-size=224 --epochs=90 --color-jitter=0 --amp --lr=0.001 --sched=step --model-ema --model-ema-decay=0.995 --reprob=0.5 --smoothing=0.1 --train-interpolation=bilinear --aa=v0 --model=resnet50 --num-classes=100 --opt=adam --weight-decay=1e-4 --log-wandb --dataset-download --experiment cifar100 --name Pretrain adam 90 epochs metabalance_ fcdecoder full logging_attack___BCEBIN --decay-rate 0.1 --decay-epochs 30 --metabalance --pretrained
 
 
 
